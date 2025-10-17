@@ -1,0 +1,147 @@
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+from catboost import CatBoostRegressor
+
+# -------------------------
+# Load Data
+# -------------------------
+data = pd.read_csv("Udata.csv")
+X = data.iloc[:, 0:5].values   # Features
+y = data.iloc[:, 5].values     # Label
+
+# Split data (70% train, 30% test)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.3, random_state=42
+)
+
+# -------------------------
+# Objective Function for COA
+# -------------------------
+def objective(params):
+    depth = int(params[0])
+    lr = params[1]
+    l2_leaf_reg = params[2]
+
+    model = CatBoostRegressor(
+        depth=depth,
+        learning_rate=lr,
+        l2_leaf_reg=l2_leaf_reg,
+        iterations=300,
+        silent=True,
+        random_seed=42
+    )
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    return mean_squared_error(y_test, preds)
+
+# -------------------------
+# Coati Optimization Algorithm (COA)
+# -------------------------
+class COA:
+    def __init__(self, obj_func, dim, lb, ub, n_agents=10, max_iter=20):
+        self.obj_func = obj_func
+        self.dim = dim
+        self.lb = np.array(lb)
+        self.ub = np.array(ub)
+        self.n_agents = n_agents
+        self.max_iter = max_iter
+
+    def optimize(self):
+        # Initialize population (coatis)
+        coatis = np.random.uniform(self.lb, self.ub, (self.n_agents, self.dim))
+        fitness = np.array([self.obj_func(ind) for ind in coatis])
+        best_idx = np.argmin(fitness)
+        best_pos = coatis[best_idx].copy()
+        best_score = fitness[best_idx]
+
+        for t in range(self.max_iter):
+            for i in range(self.n_agents):
+                r1, r2 = np.random.rand(), np.random.rand()
+                # Exploration phase (search for food)
+                if np.random.rand() < 0.5:
+                    step = r1 * (best_pos - coatis[i]) + r2 * (self.ub - self.lb) * (np.random.rand(self.dim) - 0.5)
+                # Exploitation phase (attack prey)
+                else:
+                    step = r1 * (coatis[i] - best_pos) + r2 * (best_pos - coatis[i])
+                
+                new_pos = coatis[i] + step
+                new_pos = np.clip(new_pos, self.lb, self.ub)
+
+                new_score = self.obj_func(new_pos)
+                if new_score < fitness[i]:
+                    coatis[i] = new_pos
+                    fitness[i] = new_score
+
+                    if new_score < best_score:
+                        best_score = new_score
+                        best_pos = new_pos.copy()
+
+            print(f"Iteration {t+1}/{self.max_iter}, Best MSE: {best_score:.4f}")
+
+        return best_pos, best_score
+
+# -------------------------
+# Run COA
+# -------------------------
+dim = 3
+lb = [3, 0.01, 1]
+ub = [10, 0.3, 10]
+
+coa = COA(objective, dim, lb, ub, n_agents=50, max_iter=15)
+best_params, best_score = coa.optimize()
+
+best_depth = int(best_params[0])
+best_lr = best_params[1]
+best_l2 = best_params[2]
+
+print("\nBest Parameters Found by COA:")
+print(f"Depth: {best_depth}, Learning Rate: {best_lr:.4f}, L2 Leaf Reg: {best_l2:.4f}")
+print("Best MSE:", best_score)
+
+# -------------------------
+# Train Final Model
+# -------------------------
+final_model = CatBoostRegressor(
+    depth=best_depth,
+    learning_rate=best_lr,
+    l2_leaf_reg=best_l2,
+    iterations=500,
+    silent=True,
+    random_seed=42
+)
+final_model.fit(X_train, y_train)
+
+# Generate predictions for both training and testing data
+y_train_pred = final_model.predict(X_train)
+y_test_pred = final_model.predict(X_test)
+
+# Calculate performance metrics
+mse = mean_squared_error(y_test, y_test_pred)
+r2 = r2_score(y_test, y_test_pred)
+
+print("\nFinal Model Performance:")
+print("MSE:", mse)
+print("R²:", r2)
+
+# -------------------------
+# Create Excel file with two sheets
+# -------------------------
+# Create DataFrames for training and testing data
+train_df = pd.DataFrame({
+    'Measured Training Data': y_train,
+    'Predicted Training Data': y_train_pred
+})
+
+test_df = pd.DataFrame({
+    'Measured Testing Data': y_test,
+    'Predicted Testing Data': y_test_pred
+})
+
+# Write to Excel file with two sheets
+with pd.ExcelWriter('Co-CB_results.xlsx') as writer:
+    train_df.to_excel(writer, sheet_name='Training Data', index=False)
+    test_df.to_excel(writer, sheet_name='Testing Data', index=False)
+
+print("\nExcel file 'predictions.xlsx' has been created with two sheets.")
